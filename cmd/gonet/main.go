@@ -14,15 +14,26 @@ import (
 	"github.com/deltaog-117/gonet/internal/status"
 )
 
+const version = "v0.1.0"
+
 var globalIface string
 
 func main() {
 	flag.StringVar(&globalIface, "iface", "wlan0", "wireless interface to use")
+	versionFlag := flag.Bool("version", false, "print version and exit")
+	helpFlag := flag.Bool("help", false, "print help and exit")
+	// Also support -h as shorthand for help (flag will treat -h as -help if we define it)
+	shortHelp := flag.Bool("h", false, "print help and exit")
 	flag.Parse()
 
-	if len(flag.Args()) == 0 {
+	if *versionFlag {
+		fmt.Printf("gonet %s\n", version)
+		os.Exit(0)
+	}
+
+	if *helpFlag || *shortHelp || len(flag.Args()) == 0 {
 		printUsage()
-		os.Exit(1)
+		os.Exit(0)
 	}
 
 	cmd := flag.Args()[0]
@@ -65,6 +76,7 @@ Commands:
 
 Flags:
   -iface string   wireless interface (default "wlan0")
+  -version        print version and exit
   -h, -help       show this help
 `)
 }

@@ -1,61 +1,68 @@
 package connect
 
 import (
+	"bufio"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
 	"github.com/deltaog-117/gonet/internal/shared/exec"
 )
 
-// Connector handles Wi-Fi connections.
 type Connector struct {
 	commander exec.Commander
 }
 
-// New creates a new Connector.
 func New(commander exec.Commander) *Connector {
 	return &Connector{commander: commander}
 }
 
-// Connect attempts to connect to a WPA2-PSK network.
 func (c *Connector) Connect(iface, ssid, psk string) error {
-	// Step 1: Add network
-	out, _, err := c.commander.Run("wpa_cli", "-i", iface, "add_network")
+	cmd := c.commander.Command("wpa_cli", "-i", iface)
+	stdin, err := cmd.StdinPipe()
 	if err != nil {
-		return fmt.Errorf("failed to add network: %w", err)
+		return fmt.Errorf("failed to get stdin pipe: %w", err)
 	}
-	networkID := strings.TrimSpace(out)
-
-	// Step 2: Set SSID
-	_, _, err = c.commander.Run("wpa_cli", "-i", iface, "set_network", networkID, "ssid", fmt.Sprintf(`"%s"`, ssid))
+	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return fmt.Errorf("failed to set SSID: %w", err)
+		return fmt.Errorf("failed to get stdout pipe: %w", err)
 	}
-
-	// Step 3: Set PSK
-	_, _, err = c.commander.Run("wpa_cli", "-i", iface, "set_network", networkID, "psk", fmt.Sprintf(`"%s"`, psk))
-	if err != nil {
-		return fmt.Errorf("failed to set PSK: %w", err)
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("failed to start wpa_cli: %w", err)
 	}
 
-	// Step 4: Select network
-	_, _, err = c.commander.Run("wpa_cli", "-i", iface, "select_network", networkID)
-	if err != nil {
-		return fmt.Errorf("failed to select network: %w", err)
+	commands := []string{
+		"add_network",
+		fmt.Sprintf("set_network 0 ssid \"%s\"", ssid),
+		fmt.Sprintf("set_network 0 psk \"%s\"", psk),
+		"select_network 0",
+		"enable_network 0",
+	}
+	for _, cmdStr := range commands {
+		if _, err := io.WriteString(stdin, cmdStr+"\n"); err != nil {
+			return fmt.Errorf("failed to send command %q: %w", cmdStr, err)
+		}
+	}
+	stdin.Close()
+
+	scanner := bufio.NewScanner(stdout)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.Contains(line, "FAIL") {
+			return fmt.Errorf("wpa_cli command failed: %s", line)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("error reading wpa_cli output: %w", err)
+	}
+	if err := cmd.Wait(); err != nil {
+		return fmt.Errorf("wpa_cli exited with error: %w", err)
 	}
 
-	// Step 5: Enable network
-	_, _, err = c.commander.Run("wpa_cli", "-i", iface, "enable_network", networkID)
-	if err != nil {
-		return fmt.Errorf("failed to enable network: %w", err)
-	}
-
-	// Step 6: Wait for connection
 	return c.waitForConnection(iface)
 }
 
-// waitForConnection polls wpa_cli status until connected or timeout.
 func (c *Connector) waitForConnection(iface string) error {
 	const timeout = 30 * time.Second
 	const interval = 200 * time.Millisecond
@@ -64,21 +71,17 @@ func (c *Connector) waitForConnection(iface string) error {
 	for time.Now().Before(deadline) {
 		out, _, err := c.commander.Run("wpa_cli", "-i", iface, "status")
 		if err != nil {
-			// Continue polling; wpa_cli might be busy
 			time.Sleep(interval)
 			continue
 		}
-
 		if strings.Contains(out, "wpa_state=COMPLETED") {
 			return nil
 		}
 		time.Sleep(interval)
 	}
-
 	return fmt.Errorf("connection timed out after %v", timeout)
 }
 
-// ConnectInterface is a convenience function using the real Commander.
 func ConnectInterface(iface, ssid, psk string) error {
 	connector := New(&exec.RealCommander{})
 	return connector.Connect(iface, ssid, psk)
