@@ -15,6 +15,8 @@
 | 2026-09-05 | Feature: View/Status | `iw link` + Go `net` stdlib | ✅ Confirmed |
 | 2026-09-05 | Feature: Connect | `wpa_cli` sequential commands + `dhcpcd` | ✅ Confirmed |
 | 2026-09-05 | Feature: Disconnect | `wpa_cli disconnect` | ✅ Confirmed |
+| 2026-09-06 | Interactive TUI (Network Selector) | BubbleTea | ✅ Confirmed |
+| 2026-09-06 | Auto‑Connect Daemon | Pure Go + Cron/OpenRC/Runit (no systemd) | 🔄 Planned |
 
 ---
 
@@ -146,15 +148,6 @@ I chose the subprocess/hybrid strategy across all four features for the followin
 - Optionally, call `wpa_cli remove_network 0` to forget the network.
 - Optionally, call `ip link set wlan0 down` to deactivate the interface.
 
-**Project Structure:**
-- `cmd/myapp/main.go` – Thin entry point (parse flags, init logging, run TUI/CLI).
-- `internal/scanner/` – Scanning logic.
-- `internal/status/` – Current connection status (Wi-Fi + IP).
-- `internal/connector/` – Connect/disconnect orchestration.
-- `internal/models/` – `Network` struct and `SecurityType` enum (using `iota`).
-- `internal/exec/` – Wrappers around `exec.Command` for testability (allow mocking).
-- `pkg/parser/` – `iw` and `wpa_cli` output parsers.
-
 ---
 
 #### References
@@ -167,9 +160,141 @@ I chose the subprocess/hybrid strategy across all four features for the followin
 
 ---
 
-#### Review / Update Log
+### Interactive TUI Selection
+
+**Date:** 2026-09-06  
+**Status:** Confirmed
+
+---
+
+#### Context / Background
+
+The CLI version of `gonet` works well for one‑off commands, but daily usage requires a more interactive experience: constantly updated list of available networks, arrow‑key navigation, and a simple way to select and connect. I wanted to add a full‑screen terminal interface that runs inside the same terminal window, without requiring a graphical environment.
+
+The constraints:
+- Must run in a standard terminal (no X11/Wayland required).
+- Must handle periodic scanning without blocking the UI.
+- Should be keyboard‑driven (arrows, Enter, Esc, Ctrl+C).
+- Must integrate with the existing `scan`, `connect`, `disconnect` backends.
+
+---
+
+#### Options Considered
+
+**Option A: BubbleTea (`charmbracelet/bubbletea`)**
+
+| Aspect | Assessment |
+|--------|------------|
+| **Advantages** | • Pure Go, compiles to single binary <br> • Modern Elm‑architecture model <br> • Excellent built‑in components (`list`, `textinput`, `help`) <br> • Handles terminal resize and signals cleanly <br> • Active community and documentation |
+| **Disadvantages** | • Requires learning the update/view pattern <br> • Slightly different from traditional imperative TUI |
+| **Implementation Difficulty** | Medium |
+| **Fit with Constraints** | ✅ Perfect. Provides all needed interactivity with minimal boilerplate. |
+
+**Option B: `tview` / `cview`**
+
+| Aspect | Assessment |
+|--------|------------|
+| **Advantages** | • Mature library with many primitives <br> • Supports mouse clicks <br> • Traditional widget‑based approach |
+| **Disadvantages** | • More verbose for simple list scenarios <br> • Requires manual layout management <br> • Slightly heavier terminal interaction |
+| **Implementation Difficulty** | Medium‑Hard |
+| **Fit with Constraints** | ✅ Good, but BubbleTea is more modern and lighter. |
+
+**Option C: `gocui` (Minimalist)**
+
+| Aspect | Assessment |
+|--------|------------|
+| **Advantages** | • Extremely lightweight <br> • Total control over screen rendering |
+| **Disadvantages** | • No built‑in list widget <br> • Must manually handle scrolling, highlighting, input <br> • High boilerplate |
+| **Implementation Difficulty** | Hard |
+| **Fit with Constraints** | ❌ Overkill for this use case. |
+
+---
+
+#### Decision & Rationale
+
+**Chosen Option:** BubbleTea
+
+**Reasoning:**
+
+BubbleTea gives the best balance of developer experience, maintainability, and end‑user polish. Its built‑in `list` component handles all the heavy lifting (scrolling, pagination, filtering, key handling), and the `textinput` component provides a secure password prompt. The periodic auto‑refresh is elegantly handled by sending a tick command every 5 seconds.
+
+I chose BubbleTea over the alternatives because it will produce a professional, responsive interface with minimal code, and its single‑binary nature aligns perfectly with `gonet`'s distribution philosophy.
+
+**Trade‑offs accepted:**
+- **Learning curve** – I’ll need to understand the `tea` model, but it's worth the investment.
+- **No mouse support by default** – Keyboard is sufficient for a terminal tool.
+- **Slightly larger binary** – The BubbleTea dependency adds a few MB, but it's still negligible.
+
+---
+
+#### Implementation Notes
+
+- New command: `gonet tui`.
+- Model contains: a `list.Model` for networks, a `textinput.Model` for password input, a `scanning` state flag, and a `connecting` flag.
+- Periodic tick sends a `ScanMsg` that calls `scan.ScanInterface()` in a separate goroutine and sends the result back via a `tea.Cmd`.
+- On selection, the model transitions to a password prompt; pressing Enter calls `connect.ConnectInterface()` and shows a status message.
+- Press Esc or Ctrl+C to quit.
+
+---
+
+#### References
+
+- [BubbleTea documentation](https://github.com/charmbracelet/bubbletea)
+- [BubbleTea list component](https://github.com/charmbracelet/bubbles/list)
+- [BubbleTea textinput component](https://github.com/charmbracelet/bubbles/textinput)
+
+---
+
+### Backlog: Systemd‑Free Auto‑Connect Daemon
+
+**Date:** 2026-09-06  
+**Status:** Planned (post‑v1.0)
+
+---
+
+#### Context / Background
+
+After the interactive TUI, the next logical step is to make `gonet` automatically connect to known networks on boot or when a known network comes into range. This must be done **without systemd** to maintain distro‑agnosticism.
+
+**Goal:** A subcommand `gonet daemon` that runs in the background, periodically scans, and auto‑connects to trusted networks defined in a config file.
+
+**Proposed solution (pure Go + init‑script integration):**
+1. The daemon itself is a pure Go program that runs continuously in a loop (e.g., scan every 10 seconds).
+2. It reads a TOML config file (`~/.gonet/config.toml`) with a list of networks and their PSKs.
+3. When it detects a known SSID, it triggers the same `connect.ConnectInterface()` flow.
+4. For startup integration (no systemd):
+   - Provide a `cron @reboot` entry that starts the daemon.
+   - Provide an OpenRC init script (`/etc/init.d/gonet`).
+   - Provide a Runit run script (`/etc/sv/gonet/run`).
+   - Document manual `nohup` usage.
+
+This approach guarantees the daemon works on **any** Linux distribution, regardless of init system.
+
+---
+
+#### Implementation Notes (Future)
+
+- Add a `internal/daemon/` package with a `Run()` function that loops and scans.
+- Config file parsing using `BurntSushi/toml` (pure Go).
+- Use `go-homedir` to locate `~/.gonet/config.toml`.
+- Logging to `/var/log/gonet.log` or syslog via `log/slog`.
+- Graceful shutdown on SIGTERM/SIGINT.
+
+---
+
+#### References
+
+- [TOML spec](https://toml.io/en/)
+- [golang‑cron examples](https://pkg.go.dev/github.com/robfig/cron/v3) (for scheduling inside the daemon)
+- OpenRC documentation
+
+---
+
+## 📝 Review / Update Log (Single, Unified)
 
 | Date | Update | Author |
 |------|--------|--------|
-| 2026-09-05 | Initial decision – confirmed all four features using Option A | deltaog-117 |
-|  |  |  |
+| 2026-09-05 | Initial diary created with backend strategy and four core feature decisions | deltaog-117 |
+| 2026-09-06 | Added decision entry for interactive TUI (BubbleTea) | deltaog-117 |
+| 2026-09-06 | Added backlog entry for systemd‑free auto‑connect daemon | deltaog-117 |
+| 2026-09-06 | Consolidated multiple review logs into a single unified table | deltaog-117 |
