@@ -6,16 +6,18 @@ import (
 	"os"
 	"os/exec"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/deltaog-117/gonet/internal/connect"
 	"github.com/deltaog-117/gonet/internal/disconnect"
 	"github.com/deltaog-117/gonet/internal/scan"
 	"github.com/deltaog-117/gonet/internal/status"
 )
 
-var iface string
+var globalIface string
 
 func main() {
-	flag.StringVar(&iface, "iface", "wlan0", "wireless interface to use")
+	flag.StringVar(&globalIface, "iface", "wlan0", "wireless interface to use")
 	flag.Parse()
 
 	if len(flag.Args()) == 0 {
@@ -39,6 +41,8 @@ func main() {
 		connectCmd(ssid, psk)
 	case "disconnect":
 		disconnectCmd()
+	case "tui":
+		tuiCmd()
 	default:
 		fmt.Printf("Unknown command: %s\n", cmd)
 		printUsage()
@@ -57,6 +61,7 @@ Commands:
   status                  Show current connection status
   connect <SSID> <PSK>    Connect to a WPA2-PSK network
   disconnect              Disconnect from current network
+  tui                     Start interactive TUI
 
 Flags:
   -iface string   wireless interface (default "wlan0")
@@ -65,7 +70,7 @@ Flags:
 }
 
 func scanCmd() {
-	networks, err := scan.ScanInterface(iface)
+	networks, err := scan.ScanInterface(globalIface)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Scan failed: %v\n", err)
 		os.Exit(1)
@@ -82,7 +87,7 @@ func scanCmd() {
 }
 
 func statusCmd() {
-	s, err := status.GetStatusInterface(iface)
+	s, err := status.GetStatusInterface(globalIface)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Status failed: %v\n", err)
 		os.Exit(1)
@@ -100,17 +105,17 @@ func statusCmd() {
 
 func connectCmd(ssid, psk string) {
 	fmt.Printf("Connecting to %s...\n", ssid)
-	err := connect.ConnectInterface(iface, ssid, psk)
+	err := connect.ConnectInterface(globalIface, ssid, psk)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Connection failed: %v\n", err)
 		os.Exit(1)
 	}
 	fmt.Println("Association successful. Obtaining IP via DHCP...")
 	// Try dhcpcd first
-	cmd := exec.Command("dhcpcd", iface)
+	cmd := exec.Command("dhcpcd", globalIface)
 	if err := cmd.Run(); err != nil {
 		// Fallback to udhcpc
-		cmd = exec.Command("udhcpc", "-i", iface)
+		cmd = exec.Command("udhcpc", "-i", globalIface)
 		if err2 := cmd.Run(); err2 != nil {
 			fmt.Fprintf(os.Stderr, "Warning: DHCP failed: %v (tried dhcpcd and udhcpc)\n", err)
 			// Still connected, but no IP
@@ -124,10 +129,19 @@ func connectCmd(ssid, psk string) {
 }
 
 func disconnectCmd() {
-	err := disconnect.DisconnectInterface(iface)
+	err := disconnect.DisconnectInterface(globalIface)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Disconnect failed: %v\n", err)
 		os.Exit(1)
 	}
 	fmt.Println("Disconnected.")
+}
+
+func tuiCmd() {
+	m := NewModel(globalIface)
+	p := tea.NewProgram(m, tea.WithAltScreen())
+	if _, err := p.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "TUI failed: %v\n", err)
+		os.Exit(1)
+	}
 }
