@@ -530,12 +530,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.list.SetItems(items)
 		}
 		return m, nil
-		m.networks = msg.networks
-		m.statusMessage = fmt.Sprintf("%d networks", len(m.networks))
-		m.errorMessage = ""
-		items := buildItems(m.networks, m.connected, m.sortBySignal)
-		m.list.SetItems(items)
-		return m, nil
 
 	case statusResultMsg:
 		if msg.err == nil && msg.status != nil && msg.status.SSID != "" {
@@ -573,7 +567,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tickMsg:
 		if m.state != stateConnecting && m.state != statePassword && m.state != stateHidden {
-			return m, tuiScanCmd()
+			return m, tea.Batch(tuiScanCmd(), tickCmd())
 		}
 		return m, tickCmd()
 

@@ -9,8 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Interface auto-detection: `-iface` now defaults to the first detected wireless interface (checks `/sys/class/net/*/wireless` and `/sys/class/net/*/phy80211`, falling back to `iw dev`) instead of hardcoding `wlan0`; falls back to `wlan0` with a warning if none is found, and `-iface` still overrides detection when passed explicitly
+
+### Fixed
+- `scan` no longer misreports permission errors (`Operation not permitted`, e.g. running without `sudo`) as a generic "interface is busy" message after wasting ~7s retrying; it now fails fast with a clear "requires root privileges" error
+- `connect` no longer silently discards `wpa_cli` stderr and can no longer hang indefinitely if `wpa_cli` can't reach the `wpa_supplicant` control socket; it now times out after 10s with an actionable message
+- TUI: fixed dead/unreachable duplicate code in the scan-result handler
+- TUI: fixed auto-refresh (every 5s) stopping after the first tick because the refresh timer wasn't rescheduling itself
+
 ### Planned
-- Interface auto‑detection
 - Configuration file support (`~/.gonet/config.toml`)
 - Auto‑connect daemon (no systemd)
 - TPM 2.0 secure storage for passwords

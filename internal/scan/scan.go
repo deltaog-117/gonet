@@ -35,8 +35,10 @@ func (s *Scanner) Scan(iface string) ([]models.Network, error) {
 		if err == nil {
 			break
 		}
-		if strings.Contains(stderr, "Device or resource busy") ||
-			strings.Contains(stderr, "Operation not permitted") {
+		if strings.Contains(stderr, "Operation not permitted") {
+			return nil, fmt.Errorf("permission denied: scanning %q requires root privileges (try: sudo gonet scan)", iface)
+		}
+		if strings.Contains(stderr, "Device or resource busy") {
 			time.Sleep(backoff[attempt])
 			continue
 		}

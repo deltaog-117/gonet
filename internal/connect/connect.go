@@ -2,6 +2,7 @@ package connect
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"io"
 	"strings"
@@ -20,6 +21,8 @@ func New(commander exec.Commander) *Connector {
 
 func (c *Connector) Connect(iface, ssid, psk string) error {
 	cmd := c.commander.Command("wpa_cli", "-i", iface)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return fmt.Errorf("failed to get stdin pipe: %w", err)
@@ -46,18 +49,47 @@ func (c *Connector) Connect(iface, ssid, psk string) error {
 	}
 	stdin.Close()
 
-	scanner := bufio.NewScanner(stdout)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if strings.Contains(line, "FAIL") {
-			return fmt.Errorf("wpa_cli command failed: %s", line)
+	// wpa_cli keeps retrying forever if it can't reach the wpa_supplicant
+	// control socket (e.g. missing permissions), so the read loop runs in
+	// its own goroutine and is bounded by setupTimeout below instead of
+	// blocking Connect indefinitely.
+	type readResult struct {
+		failLine string
+		err      error
+	}
+	done := make(chan readResult, 1)
+	go func() {
+		scanner := bufio.NewScanner(stdout)
+		for scanner.Scan() {
+			line := scanner.Text()
+			if strings.Contains(line, "Could not connect to wpa_supplicant") {
+				done <- readResult{err: fmt.Errorf("could not reach wpa_supplicant on %q; is it running, and do you have permission to access it? (try: sudo)", iface)}
+				return
+			}
+			if strings.Contains(line, "FAIL") {
+				done <- readResult{failLine: line}
+				return
+			}
 		}
+		done <- readResult{err: scanner.Err()}
+	}()
+
+	const setupTimeout = 10 * time.Second
+	select {
+	case res := <-done:
+		if res.failLine != "" {
+			return fmt.Errorf("wpa_cli command failed: %s", res.failLine)
+		}
+		if res.err != nil {
+			return fmt.Errorf("error reading wpa_cli output: %w", res.err)
+		}
+	case <-time.After(setupTimeout):
+		cmd.Process.Kill()
+		return fmt.Errorf("wpa_cli did not respond within %v; is wpa_supplicant running, and do you have permission to access it? (try: sudo)", setupTimeout)
 	}
-	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("error reading wpa_cli output: %w", err)
-	}
+
 	if err := cmd.Wait(); err != nil {
-		return fmt.Errorf("wpa_cli exited with error: %w", err)
+		return fmt.Errorf("wpa_cli exited with error: %w (stderr: %s)", err, strings.TrimSpace(stderr.String()))
 	}
 
 	return c.waitForConnection(iface)

@@ -10,7 +10,9 @@ import (
 
 	"github.com/deltaog-117/gonet/internal/connect"
 	"github.com/deltaog-117/gonet/internal/disconnect"
+	"github.com/deltaog-117/gonet/internal/iface"
 	"github.com/deltaog-117/gonet/internal/scan"
+	execwrap "github.com/deltaog-117/gonet/internal/shared/exec"
 	"github.com/deltaog-117/gonet/internal/status"
 )
 
@@ -19,7 +21,7 @@ const version = "v0.1.0"
 var globalIface string
 
 func main() {
-	flag.StringVar(&globalIface, "iface", "wlan0", "wireless interface to use")
+	flag.StringVar(&globalIface, "iface", "", "wireless interface to use (auto-detected if omitted)")
 	versionFlag := flag.Bool("version", false, "print version and exit")
 	helpFlag := flag.Bool("help", false, "print help and exit")
 	// Also support -h as shorthand for help (flag will treat -h as -help if we define it)
@@ -34,6 +36,17 @@ func main() {
 	if *helpFlag || *shortHelp || len(flag.Args()) == 0 {
 		printUsage()
 		os.Exit(0)
+	}
+
+	if globalIface == "" {
+		const fallback = "wlan0"
+		detected, err := iface.Detect(&execwrap.RealCommander{})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: could not auto-detect a wireless interface (%v); defaulting to %q\n", err, fallback)
+			globalIface = fallback
+		} else {
+			globalIface = detected
+		}
 	}
 
 	cmd := flag.Args()[0]
@@ -75,7 +88,7 @@ Commands:
   tui                     Start interactive TUI
 
 Flags:
-  -iface string   wireless interface (default "wlan0")
+  -iface string   wireless interface to use (auto-detected if omitted)
   -version        print version and exit
   -h, -help       show this help
 `)

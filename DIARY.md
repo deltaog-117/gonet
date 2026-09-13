@@ -20,6 +20,8 @@
 | 2026-09-05 | SSID Encoding | UTF-8 decoding with Latin-1 fallback | ✅ Confirmed |
 | 2026-09-05 | Scan Retry Logic | Exponential backoff (1s, 2s, 4s) with friendly error messages | ✅ Confirmed |
 | 2026-09-05 | Auto‑Connect Daemon | Pure Go + Cron/OpenRC/Runit (no systemd) | 🔄 Planned |
+| 2026-09-13 | Permission vs. Busy Error Handling | Classify `Operation not permitted` separately; bound `connect` with a timeout | ✅ Confirmed |
+| 2026-09-13 | Feature: Interface Auto-Detection | sysfs (`wireless`/`phy80211`) first, `iw dev` fallback | ✅ Confirmed |
 
 ---
 
@@ -206,6 +208,92 @@ Retrying with increasing delays gives the interface time to become free. The fri
 
 ---
 
+### Permission vs. Busy Error Handling
+
+**Date:** 2026-09-13  
+**Status:** Confirmed
+
+---
+
+#### Context / Background
+
+The Scan Retry Logic decision (above) treated `Operation not permitted` exactly like `Device or resource busy`: both triggered the exponential backoff retry, and after all retries were exhausted, both produced the same generic `"interface is busy; please wait and try again"` message. In practice, `Operation not permitted` is returned by `iw` when the caller lacks `CAP_NET_ADMIN` (i.e., not running as root) — a permanent condition that retrying can never fix. A user running `gonet scan` without `sudo` would wait ~7 seconds through three pointless retries and then be told the interface was "busy," when the real problem was missing privileges. Separately, `connect.Connect()` never captured `wpa_cli`'s stderr and had no timeout around the interactive session, so if `wpa_cli` couldn't reach the `wpa_supplicant` control socket (the same privilege issue, or `wpa_supplicant` not running), it could hang indefinitely instead of failing with a useful message.
+
+#### Decision & Rationale
+
+**Chosen Option:** Classify `Operation not permitted` as a distinct, non-retryable error with an actionable message; only retry on genuine `Device or resource busy`. For `connect`, capture stderr and bound the whole `wpa_cli` exchange with a 10s timeout so a stuck control-socket connection fails loudly instead of hanging.
+
+**Reasoning:**
+
+> Retrying a permission error wastes time and produces a misleading diagnosis. Splitting the two cases lets each fail in a way that tells the user what to actually do: "requires root privileges (try: sudo)" for permissions, vs. the existing busy-retry-then-message flow for genuine transient contention. For `connect`, wiring up `cmd.Stderr` and adding a timeout turns a silent, indefinite hang into a clear, bounded failure.
+
+**Trade‑offs accepted:**
+- `connect` now spawns a goroutine to read `wpa_cli` stdout so it can race against a timeout; slightly more code, but contained to one function.
+
+---
+
+#### Implementation Notes
+
+- `internal/scan/scan.go`: check `Operation not permitted` first and return immediately; only `Device or resource busy` continues the backoff loop.
+- `internal/connect/connect.go`: `cmd.Stderr` now captured; stdout reading moved to a goroutine racing a 10s `setupTimeout`; both `wpa_cli`-reported `FAIL` and `Could not connect to wpa_supplicant` are detected explicitly.
+- `cmd/gonet/tui.go`: fixed an unrelated dead-code duplicate in the `scanResultMsg` handler, and fixed the 5-second auto-refresh timer not rescheduling itself after the first tick (found while investigating the same bug report).
+
+---
+
+#### References
+
+- Reported by the user via a CLI repro: `gonet scan` (no `sudo`) → `"Scan failed: interface is busy; please wait and try again"` after ~11s.
+
+---
+
+### Feature: Interface Auto-Detection
+
+**Date:** 2026-09-13  
+**Status:** Confirmed
+
+---
+
+#### Context / Background
+
+Every command hardcoded `wlan0` as the default interface. On systems where the wireless card isn't named `wlan0` (e.g. `wlp2s0`, `wlp3s0` under systemd's predictable naming, or a second wireless adapter), users had to remember to pass `-iface` every time, and the tool's own error messages (like the busy/permission fix above) still referenced whatever name was guessed, which made a wrong default confusing to debug.
+
+#### Options Considered
+
+| Aspect | Option A: sysfs check only | Option B: `iw dev` parsing only | Option C: sysfs first, `iw dev` fallback |
+|--------|------------------------------|----------------------------------|-------------------------------------------|
+| **Advantages** | • No subprocess, instant <br> • Works even if `iw` isn't installed yet | • Single source of truth (same tool used elsewhere) | • Fast common case, no subprocess needed <br> • Still works if sysfs is unavailable or ambiguous |
+| **Disadvantages** | • Relies on Linux-specific `/sys` layout | • Always shells out, slower | • Slightly more code (two code paths) |
+| **Difficulty** | Easy | Easy | Easy-Medium |
+| **Fit** | ✅ Good, but no fallback if layout differs | ⚠️ Works, but pays subprocess cost every run | ✅ Best of both |
+
+#### Decision & Rationale
+
+**Chosen Option:** sysfs check first (`/sys/class/net/*/wireless` or `phy80211` symlink), falling back to parsing `iw dev` — exactly as already specified in `ROADMAP.md`.
+
+**Reasoning:**
+
+> sysfs is the fastest and most reliable signal the kernel gives us for "is this a wireless NIC," with zero subprocess overhead. Falling back to `iw dev` covers any edge case where sysfs is unreadable or laid out unexpectedly. If neither finds anything, we don't hard-fail — we fall back to the historical `wlan0` default with a warning, so existing scripts/muscle memory that never pass `-iface` don't break outright; `-iface` still overrides auto-detection unconditionally.
+
+**Trade-offs accepted:**
+- Two detection code paths instead of one, but each is small and independently testable via the existing `Commander` mock (for `iw dev`) and a swappable `sysNetPath` var (for sysfs).
+
+---
+
+#### Implementation Notes
+
+- New package `internal/iface` (feature-first, mirrors `scan`/`connect`/`status`).
+- `Detect(commander exec.Commander) (string, error)` is the public entry point.
+- `cmd/gonet/main.go`: `-iface` default changed from `"wlan0"` to `""`; when empty after parsing, `iface.Detect` runs and the result (or `wlan0` + a stderr warning on failure) becomes `globalIface` before command dispatch.
+- Detection runs after the `-version`/`-help` early exits, so those paths stay fast and don't touch the filesystem or spawn `iw`.
+
+---
+
+#### References
+
+- Confirmed working against this machine's real `/sys/class/net` (found `wlan0` via the `wireless` subdirectory, alongside `docker0`, `enp3s0`, `lo`).
+
+---
+
 ## 📝 Review / Update Log (Single, Unified)
 
 | Date | Update | Author |
@@ -214,5 +302,7 @@ Retrying with increasing delays gives the interface time to become free. The fri
 | 2026-09-05 | Added decision entries for interactive TUI (BubbleTea) and daemon backlog | deltaog-117 |
 | 2026-09-05 | Added TUI redesign, SSID encoding, and retry logic entries | deltaog-117 |
 | 2026-09-05 | Consolidated review logs into a single table | deltaog-117 |
+| 2026-09-13 | Added permission-vs-busy error handling entry (scan/connect fix) | deltaog-117 |
+| 2026-09-13 | Added Interface Auto-Detection decision entry (v1.1.0) | deltaog-117 |
 
 ---

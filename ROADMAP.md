@@ -42,14 +42,19 @@ Items are organized by **priority**, not by timeline.
 
 ---
 
+### v1.1.0 – In Progress
+
+- ✅ **Interface Auto-Detection**
+  - `-iface` now defaults to auto-detection instead of hardcoding `wlan0`
+  - Checks `/sys/class/net/*/wireless` and `/sys/class/net/*/phy80211` first
+  - Falls back to parsing `iw dev` if sysfs is inconclusive
+  - Falls back to `wlan0` with a warning if nothing is found (`-iface` still overrides everything)
+
+---
+
 ## 🔥 High Priority (v1.1.0 – Next Release)
 
 These items are the **next logical steps** for a more polished and automated experience.
-
-- **Interface Auto-Detection**
-  - Instead of hardcoding `wlan0`, scan `/sys/class/net/` for wireless interfaces
-  - Check for `wireless` subdirectory or `phy80211` symlink
-  - Fallback to `iw dev` to list available interfaces
 
 - **Configuration File Support**
   - Location: `~/.gonet/config.toml`

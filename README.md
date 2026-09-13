@@ -100,31 +100,36 @@ sudo cp gonet /usr/local/bin/
 
 | Command | Description |
 |---------|-------------|
-| `gonet scan -iface wlan0` | Scan for available networks |
-| `gonet status -iface wlan0` | Show current connection status |
-| `gonet connect "SSID" "PSK" -iface wlan0` | Connect to a WPA2‑PSK network |
-| `gonet disconnect -iface wlan0` | Disconnect from current network |
-| `gonet tui -iface wlan0` | Launch interactive TUI |
+| `gonet scan` | Scan for available networks |
+| `gonet status` | Show current connection status |
+| `gonet connect "SSID" "PSK"` | Connect to a WPA2‑PSK network |
+| `gonet disconnect` | Disconnect from current network |
+| `gonet tui` | Launch interactive TUI |
 | `gonet --version` | Print version and exit |
 | `gonet --help` | Show help |
 
 **Note:** Most commands require `sudo` (Wi‑Fi operations need elevated privileges).
 
+**Interface selection:** `-iface` is optional — gonet auto-detects the first wireless interface it finds (checking sysfs, then falling back to `iw dev`), only defaulting to `wlan0` with a warning if none is found. Pass `-iface <name>` to override detection (e.g. `-iface wlp2s0`).
+
 ```bash
-# Scan for networks
-sudo gonet scan -iface wlan0
+# Scan for networks (auto-detects the interface)
+sudo gonet scan
 
 # Check current status
-sudo gonet status -iface wlan0
+sudo gonet status
 
 # Connect to a network
-sudo gonet connect "MyHomeWiFi" "MySecretPassword" -iface wlan0
+sudo gonet connect "MyHomeWiFi" "MySecretPassword"
 
 # Disconnect
-sudo gonet disconnect -iface wlan0
+sudo gonet disconnect
 
 # Launch the TUI
-sudo gonet tui -iface wlan0
+sudo gonet tui
+
+# Override auto-detection
+sudo gonet scan -iface wlp2s0
 ```
 
 ---
@@ -176,6 +181,7 @@ gonet/
 │   ├── appstate/        # Global application state
 │   ├── connect/         # Connect to networks
 │   ├── disconnect/      # Disconnect from networks
+│   ├── iface/           # Wireless interface auto-detection
 │   ├── scan/            # Scan for networks
 │   ├── shared/          # Read‑only infrastructure
 │   │   ├── exec/        # Testable os/exec wrapper
